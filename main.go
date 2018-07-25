@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
-	"go/token"
 	"os"
 )
+
+// A FileSet represents a set of source files. Methods of file sets are synchronized; multiple goroutines may invoke them concurrently.
+type FileSet struct{}
 
 type parseError struct{}
 
@@ -17,7 +19,7 @@ func (err parseError) Error() string {
 // If filter != nil, only the files with os.FileInfo entries passing through the filter (and ending in ".lua") are considered. The mode bits are passed to ParseFile unchanged. Position information is recorded in fset, which must not be nil.
 //
 // If the directory couldn't be read, a nil map and the respective error are returned. If a parse error occurred, a non-nil but incomplete map and the first error encountered are returned.
-func ParseDir(fset *token.FileSet, path string, filter func(os.FileInfo) bool, mode Mode) (pkgs map[string]*Package, first error) {
+func ParseDir(fset *FileSet, path string, filter func(os.FileInfo) bool, mode Mode) (pkgs map[string]*Package, first error) {
 	return nil, parseError{}
 }
 
@@ -27,7 +29,7 @@ func ParseExpr(x string) (Expr, error) {
 }
 
 // ParseExprFrom is a convenience function for parsing an expression. The arguments have the same meaning as for ParseFile, but the source must be a valid Lua (type or value) expression. Specifically, fset must not be nil.
-func ParseExprFrom(fset *token.FileSet, filename string, src interface{}, mode Mode) (Expr, error) {
+func ParseExprFrom(fset *FileSet, filename string, src interface{}, mode Mode) (Expr, error) {
 	return nil, parseError{}
 }
 
@@ -38,13 +40,14 @@ func ParseExprFrom(fset *token.FileSet, filename string, src interface{}, mode M
 // The mode parameter controls the amount of source text parsed and other optional parser functionality. Position information is recorded in the file set fset, which must not be nil.
 //
 // If the source couldn't be read, the returned AST is nil and the error indicates the specific failure. If the source was read but syntax errors were found, the result is a partial AST (with Bad* nodes representing the fragments of erroneous source code). Multiple errors are returned via a scanner.ErrorList which is sorted by file position.
-func ParseFile(fset *token.FileSet, filename string, src interface{}, mode Mode) (f *File, err error) {
+func ParseFile(fset *FileSet, filename string, src interface{}, mode Mode) (f *File, err error) {
 	return nil, parseError{}
 }
 
 // A Mode value is a set of flags (or 0). They control the amount of source code parsed and other optional parser functionality.
 type Mode uint
 
+// Mode flags.
 const (
 	PackageClauseOnly Mode = 1 << iota // stop parsing after package clause
 	ImportsOnly                        // stop parsing after import declarations
@@ -65,6 +68,9 @@ type Package Chunk
 
 // Expr ast.
 type Expr Exp
+
+// Args main.
+type Args interface{}
 
 // Chunk main.
 type Chunk struct {
@@ -97,8 +103,18 @@ type FuncName struct {
 	method *Name
 }
 
+// FuncBody main.
+type FuncBody struct{}
+
+// FunctionCall main.
+type FunctionCall struct {
+	PrefixExp
+	*Name
+	Args
+}
+
 // FunctionDef main.
-type FunctionDef struct{}
+type FunctionDef struct{ FuncBody }
 
 // Index main.
 type Index struct {
@@ -144,11 +160,14 @@ type RetStat struct {
 	*ExpList
 }
 
+// Semi main.
+type Semi struct{}
+
 // Stat main.
 type Stat interface{}
 
-// Semi main.
-type Semi struct{}
+// StringLiteral main.
+type StringLiteral interface{}
 
 // TableConstructor main.
 type TableConstructor struct{}
@@ -156,7 +175,7 @@ type TableConstructor struct{}
 // True main.
 type True struct{}
 
-// UnOp main.
+// UnExp main.
 type UnExp struct {
 	UnOp
 	Exp
@@ -215,9 +234,10 @@ func (parser Parser) retstat(i int) (*RetStat, int) {
 func (parser Parser) label(i int) (*Label, int) {
 	if parser.data[i:i+2] == "::" {
 		name, j := parser.name(parser.white(i + 2))
-		if parser.data[j:j+2] == "::" {
+		if name != nil && parser.data[j:j+2] == "::" {
 			return &Label{*name}, parser.white(j + 2)
 		}
+		panic(parseError{})
 	}
 	return nil, i
 }
@@ -232,7 +252,7 @@ func (parser Parser) funcname(i int) (*FuncName, int) {
 	for parser.data[i] == '.' {
 		name, j := parser.name(parser.white(i + 1))
 		if name == nil {
-			break
+			panic(parseError{})
 		}
 		i = j
 		n = append(n, *name)
@@ -242,7 +262,7 @@ func (parser Parser) funcname(i int) (*FuncName, int) {
 		if name != nil {
 			return &FuncName{n, name}, j
 		}
-		i = j
+		panic(parseError{})
 	}
 	return &FuncName{n, nil}, i
 }
@@ -257,7 +277,7 @@ func (parser Parser) varlist(i int) (*VarList, int) {
 	for parser.data[i] == ',' {
 		v, j := parser.vari(parser.white(i + 1))
 		if v == nil {
-			return &VarList{l}, i
+			panic(parseError{})
 		}
 		i = j
 		l = append(l, v)
@@ -276,13 +296,14 @@ func (parser Parser) vari(i int) (Var, int) {
 		if exp != nil && parser.data[k] == ']' {
 			return Index{prefixexp, exp}, parser.white(k + 1)
 		}
-		return nil, i
+		panic(parseError{})
 	}
 	if parser.data[j] == '.' {
 		name, k := parser.name(parser.white(j + 1))
 		if name != nil {
 			return Property{prefixexp, *name}, k
 		}
+		panic(parseError{})
 	}
 	return nil, i
 }
@@ -297,7 +318,7 @@ func (parser Parser) namelist(i int) (*NameList, int) {
 	for parser.data[i] == ',' {
 		name, j := parser.name(parser.white(i + 1))
 		if name == nil {
-			return &NameList{n}, i
+			panic(parseError{})
 		}
 		i = j
 		n = append(n, *name)
@@ -315,7 +336,7 @@ func (parser Parser) explist(i int) (*ExpList, int) {
 	for parser.data[i] == ',' {
 		exp, j := parser.exp(parser.white(i + 1))
 		if exp == nil {
-			return &ExpList{exps}, i
+			panic(parseError{})
 		}
 		i = j
 		exps = append(exps, exp)
@@ -366,10 +387,73 @@ func (parser Parser) exp(i int) (Exp, int) {
 }
 
 func (parser Parser) prefixexp(i int) (PrefixExp, int) {
+	vari, i := parser.vari(i)
+	if vari != nil {
+		return vari, i
+	}
+	functioncall, i := parser.functioncall(i)
+	if functioncall != nil {
+		return functioncall, i
+	}
+	if parser.data[i] == '(' {
+		exp, j := parser.exp(parser.white(i))
+		if exp != nil && parser.data[j] == ')' {
+			return exp, parser.white(j + 1)
+		}
+	}
 	return nil, i
 }
 
+func (parser Parser) functioncall(i int) (*FunctionCall, int) {
+	prefixexp, j := parser.prefixexp(i)
+	if prefixexp != nil {
+		if parser.data[j] == ':' {
+			name, k := parser.name(parser.white(j + 1))
+			if name != nil {
+				args, l := parser.args(k)
+				if args != nil {
+					return &FunctionCall{prefixexp, name, args}, l
+				}
+			}
+			panic(parseError{})
+		} else {
+			args, k := parser.args(j)
+			if args != nil {
+				return &FunctionCall{prefixexp, nil, args}, k
+			}
+		}
+	}
+	return nil, i
+}
+
+func (parser Parser) args(i int) (Args, int) {
+	if parser.data[i] == '(' {
+		explist, j := parser.explist(parser.white(i + 1))
+		if parser.data[j] == ')' {
+			return explist, j
+		}
+		panic(parseError{})
+	}
+	tableconstructor, j := parser.tableconstructor(i)
+	if tableconstructor != nil {
+		return tableconstructor, j
+	}
+	stringliteral, j := parser.stringliteral(i)
+	return stringliteral, j
+}
+
 func (parser Parser) functiondef(i int) (*FunctionDef, int) {
+	if parser.data[i:i+8] == "function" {
+		funcbody, j := parser.funcbody(parser.white(i + 8))
+		if funcbody != nil {
+			return &FunctionDef{*funcbody}, j
+		}
+		panic(parseError{})
+	}
+	return nil, i
+}
+
+func (parser Parser) funcbody(i int) (*FuncBody, int) {
 	return nil, i
 }
 
@@ -386,6 +470,10 @@ func (parser Parser) literalstring(i int) (*LiteralString, int) {
 }
 
 func (parser Parser) name(i int) (*Name, int) {
+	return nil, i
+}
+
+func (parser Parser) stringliteral(i int) (*StringLiteral, int) {
 	return nil, i
 }
 
